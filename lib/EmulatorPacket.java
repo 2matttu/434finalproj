@@ -1,13 +1,14 @@
 import java.net.DatagramPacket;
 import java.io.ByteArrayOutputStream;
 import java.io.ByteArrayInputStream;
+import java.math.BigInteger;
 
 /**
  * Packet used by emulated nodes to send data to each other via UDP
  */
 public class EmulatorPacket {
 
-    public static int HEADER_SIZE = 3; // bytes
+    public static int HEADER_SIZE = 6; // bytes
     public static int MAX_PACKET_SIZE = Packet.MAX_PACKET_SIZE + HEADER_SIZE;
 
     private int destAddr;
@@ -76,7 +77,14 @@ public class EmulatorPacket {
 	ByteArrayOutputStream byteStream = new ByteArrayOutputStream();
 	byteStream.write(this.destAddr);
 	byteStream.write(this.srcAddr);
-	byteStream.write(HEADER_SIZE + this.payload.length);
+	// byteStream.write(HEADER_SIZE + this.payload.length);
+    byte[] sizeByteArray = (BigInteger.valueOf(HEADER_SIZE + this.payload.length)).toByteArray();
+	int paddingLength = 4 - sizeByteArray.length;
+	for(int i = 0; i < paddingLength; i++) {
+	    byteStream.write(0);
+	}
+	byteStream.write(sizeByteArray, 0, Math.min(sizeByteArray.length, 4));
+
 	byteStream.write(this.payload, 0, this.payload.length);
 	
 	return byteStream.toByteArray();
@@ -93,7 +101,12 @@ public class EmulatorPacket {
 	
 	int destAddr = byteStream.read();
 	int srcAddr = byteStream.read();
-	int packetLength = byteStream.read();
+	// int packetLength = byteStream.read();
+    byte[] sizeByteArray = new byte[4];
+	if(byteStream.read(sizeByteArray, 0, 4) != 4) {
+	    return null;
+	}
+	int packetLength = (new BigInteger(sizeByteArray)).intValue();
 
 	byte[] payload = new byte[packetLength - HEADER_SIZE];
 	int numBytesRead = byteStream.read(payload, 0, payload.length);	

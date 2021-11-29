@@ -119,6 +119,8 @@ public class Packet {
      * @return A byte[] for transporting over the wire. Null if failed to pack for some reason
      */
     public byte[] pack() {	
+
+    System.out.println("PACK");
 	
 	ByteArrayOutputStream byteStream = new ByteArrayOutputStream();
 	byteStream.write(this.dest);
@@ -142,8 +144,12 @@ public class Packet {
 	}
 
 	byteStream.write(seqByteArray, 0, Math.min(seqByteArray.length, 4));
+
+    System.out.println("Size pre-payload: " + byteStream.size() + " | Payload size: " + this.payload.length);
 		
 	byteStream.write(this.payload, 0, this.payload.length);
+
+    System.out.println("Size post-payload: " + byteStream.size());
 
 	return byteStream.toByteArray();
     }
@@ -155,11 +161,15 @@ public class Packet {
      * @return Packet object created or null if the byte[] representation was corrupted
      */
     public static Packet unpack(byte[] packedPacket){
+
+    System.out.println("UNPACK");
 	
 	ByteArrayInputStream byteStream = new ByteArrayInputStream(packedPacket);
+    System.out.println("byteStreamLength: " + byteStream.available());
 	
 	int dest = byteStream.read();
 	int src = byteStream.read();
+    System.out.println("dest: " + dest + " | src: " + src);
 	int ttl = byteStream.read();
 	int protocol = byteStream.read();
 	// int packetLength = byteStream.read();
@@ -182,9 +192,10 @@ public class Packet {
 	byte[] payload = new byte[byteStream.available()];
 	byteStream.read(payload, 0, payload.length);
 
-	// if((9 + payload.length) != packetLength) {
-	//     return null;
-	// }	
+	if((12 + payload.length) != packetLength) {
+        System.out.println("FAILED THE 12 + payload.length check. PacketLength = " + packetLength + " | payload length = " + payload.length);
+	    return null;
+	}	
 	
 	try {
 	    return new Packet(dest, src, ttl, protocol, seq, payload);
