@@ -120,7 +120,7 @@ public class Packet {
      */
     public byte[] pack() {	
 
-    System.out.println("PACK");
+    // System.out.println("PACK");
 	
 	ByteArrayOutputStream byteStream = new ByteArrayOutputStream();
 	byteStream.write(this.dest);
@@ -145,11 +145,11 @@ public class Packet {
 
 	byteStream.write(seqByteArray, 0, Math.min(seqByteArray.length, 4));
 
-    System.out.println("Size pre-payload: " + byteStream.size() + " | Payload size: " + this.payload.length);
+    // System.out.println("Size pre-payload: " + byteStream.size() + " | Payload size: " + this.payload.length);
 		
 	byteStream.write(this.payload, 0, this.payload.length);
 
-    System.out.println("Size post-payload: " + byteStream.size());
+    // System.out.println("Size post-payload: " + byteStream.size());
 
 	return byteStream.toByteArray();
     }
@@ -162,21 +162,21 @@ public class Packet {
      */
     public static Packet unpack(byte[] packedPacket){
 
-    System.out.println("UNPACK");
+    // System.out.println("UNPACK");
 	
 	ByteArrayInputStream byteStream = new ByteArrayInputStream(packedPacket);
-    System.out.println("byteStreamLength: " + byteStream.available());
+    // System.out.println("byteStreamLength: " + byteStream.available());
 	
 	int dest = byteStream.read();
 	int src = byteStream.read();
-    System.out.println("dest: " + dest + " | src: " + src);
+    // System.out.println("dest: " + dest + " | src: " + src);
 	int ttl = byteStream.read();
 	int protocol = byteStream.read();
 	// int packetLength = byteStream.read();
 
     byte[] packetLengthByteArray = new byte[4];
 	if(byteStream.read(packetLengthByteArray, 0, 4) != 4) {
-        System.out.println("111");
+        // System.out.println("111");
 	    return null;
 	}
 
@@ -193,7 +193,7 @@ public class Packet {
 	byteStream.read(payload, 0, payload.length);
 
 	if((12 + payload.length) != packetLength) {
-        System.out.println("FAILED THE 12 + payload.length check. PacketLength = " + packetLength + " | payload length = " + payload.length);
+        // System.out.println("FAILED THE 12 + payload.length check. PacketLength = " + packetLength + " | payload length = " + payload.length);
 	    return null;
 	}	
 	

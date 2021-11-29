@@ -108,7 +108,7 @@ public class Transport {
      * @return A byte[] for transporting over the wire. Null if failed to pack for some reason
      */
     public byte[] pack() {
-	System.out.println("TRANSPORT PACK");
+	// System.out.println("TRANSPORT PACK");
 	ByteArrayOutputStream byteStream = new ByteArrayOutputStream();
 	byteStream.write(this.srcPort);
 	byteStream.write(this.destPort);
@@ -138,7 +138,7 @@ public class Transport {
 	}
 	byteStream.write(sizeByteArray, 0, Math.min(sizeByteArray.length, 4));
 	byteStream.write(this.payload, 0, this.payload.length);
-    System.out.println("Size segment post-payload: " + byteStream.size());
+    // System.out.println("Size segment post-payload: " + byteStream.size());
 	return byteStream.toByteArray();
     }
 
@@ -149,10 +149,10 @@ public class Transport {
      * @return Transport object created or null if the byte[] representation was corrupted
      */
     public static Transport unpack(byte[] packet) {
-    System.out.println("TRANSPORT UNPACK");
+    // System.out.println("TRANSPORT UNPACK");
 
 	ByteArrayInputStream byteStream = new ByteArrayInputStream(packet);
-    System.out.println("byteStreamLength: " + byteStream.available());
+    // System.out.println("byteStreamLength: " + byteStream.available());
 
 
 	int srcPort = byteStream.read();
@@ -161,14 +161,14 @@ public class Transport {
 	
 	byte[] windowByteArray = new byte[4];
 	if(byteStream.read(windowByteArray, 0, 4) != 4) {
-        System.out.println("111");
+        // System.out.println("111");
 	    return null;
 	}
 	int window = (new BigInteger(windowByteArray)).intValue();
 
 	byte[] seqByteArray = new byte[4];
 	if(byteStream.read(seqByteArray, 0, 4) != 4) {
-        System.out.println("222");
+        // System.out.println("222");
 	    return null;
 	}
 	int seqNum = (new BigInteger(seqByteArray)).intValue();
@@ -176,7 +176,7 @@ public class Transport {
 	// int packetLength = byteStream.read();
     byte[] sizeByteArray = new byte[4];
 	if(byteStream.read(sizeByteArray, 0, 4) != 4) {
-        System.out.println("555");
+        // System.out.println("555");
 	    return null;
 	}
 	int packetLength = (new BigInteger(sizeByteArray)).intValue();
@@ -185,7 +185,7 @@ public class Transport {
 	int bytesRead = Math.max(0, byteStream.read(payload, 0, payload.length));
 	
 	if((HEADER_SIZE + bytesRead) != packetLength) {
-        System.out.println("333");
+        // System.out.println("333");
 	    return null;
 	}
 
@@ -194,7 +194,7 @@ public class Transport {
 	}catch(IllegalArgumentException e) {
 	    // will return null
 	}
-    System.out.println("444");
+    // System.out.println("444");
 	return null;
     }
 }
