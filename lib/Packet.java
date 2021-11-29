@@ -11,8 +11,8 @@ public class Packet {
 
     public static final int BROADCAST_ADDRESS = 255;
     public static final int MAX_ADDRESS = 255;
-    public static final int HEADER_SIZE = 9;
-    public static final int MAX_PACKET_SIZE = 128;  // bytes
+    public static final int HEADER_SIZE = 12;
+    public static final int MAX_PACKET_SIZE = 1000;  // bytes
     public static final int MAX_PAYLOAD_SIZE = MAX_PACKET_SIZE - HEADER_SIZE;  // bytes
     public static final int MAX_TTL = 15;           // max hop count
 
@@ -125,10 +125,18 @@ public class Packet {
 	byteStream.write(this.src);
 	byteStream.write(this.ttl);
 	byteStream.write(this.protocol);
-	byteStream.write(this.payload.length + Packet.HEADER_SIZE);
+	// byteStream.write(this.payload.length + Packet.HEADER_SIZE);
+    byte[] payloadLengthByteArray = (BigInteger.valueOf(this.payload.length + Packet.HEADER_SIZE)).toByteArray();
+	int paddingLength = 4 - payloadLengthByteArray.length;
+	for(int i = 0; i < paddingLength; i++) {
+	    byteStream.write(0);
+	}
+
+	byteStream.write(payloadLengthByteArray, 0, Math.min(payloadLengthByteArray.length, 4));
+
 
 	byte[] seqByteArray = (BigInteger.valueOf(this.seq)).toByteArray();
-	int paddingLength = 4 - seqByteArray.length;
+	paddingLength = 4 - seqByteArray.length;
 	for(int i = 0; i < paddingLength; i++) {
 	    byteStream.write(0);
 	}
@@ -154,7 +162,15 @@ public class Packet {
 	int src = byteStream.read();
 	int ttl = byteStream.read();
 	int protocol = byteStream.read();
-	int packetLength = byteStream.read();
+	// int packetLength = byteStream.read();
+
+    byte[] packetLengthByteArray = new byte[4];
+	if(byteStream.read(packetLengthByteArray, 0, 4) != 4) {
+        System.out.println("111");
+	    return null;
+	}
+
+	int packetLength = (new BigInteger(packetLengthByteArray)).intValue();
 	
 	byte[] seqByteArray = new byte[4];
 	if(byteStream.read(seqByteArray, 0, 4) != 4) {
@@ -166,9 +182,9 @@ public class Packet {
 	byte[] payload = new byte[byteStream.available()];
 	byteStream.read(payload, 0, payload.length);
 
-	if((9 + payload.length) != packetLength) {
-	    return null;
-	}	
+	// if((9 + payload.length) != packetLength) {
+	//     return null;
+	// }	
 	
 	try {
 	    return new Packet(dest, src, ttl, protocol, seq, payload);
