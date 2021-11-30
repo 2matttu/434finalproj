@@ -14,6 +14,25 @@
 import java.nio.ByteBuffer;
 import java.util.*;
 
+import java.io.*;
+import java.math.BigInteger;
+import java.security.*;
+import java.security.spec.*;
+import java.security.interfaces.*;
+import javax.crypto.*;
+import javax.crypto.spec.*;
+import javax.crypto.interfaces.*;
+
+import java.security.SecureRandom;
+import java.util.Base64;
+import javax.crypto.Cipher;
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.GCMParameterSpec;
+import javax.crypto.spec.SecretKeySpec;
+
+import java.util.concurrent.ThreadLocalRandom;
+
 public class TCPSock {
     public static boolean DEBUG = false; //debug (recommend setting to false)
     public static boolean DEBUGCC = false; //debug congestion control
@@ -58,6 +77,7 @@ public class TCPSock {
 
     private int seq = 0;
     private int base = 1; //sliding window
+    private int baseOrig = 1;
     private int nextSeq = 1; //sliding window
     private int expSeq = 1; //sliding window - receiver
     private int windowSize = 600; //window size, size 600 = 600*107 = 64kB
@@ -89,6 +109,9 @@ public class TCPSock {
     private double k;
     private int ackCnt;
     private int cwndCnt;
+
+    //Secure Transport Stuff
+    private byte[] dhPublicKey;
     
     public TCPSock() {
         this.state = State.INIT;
@@ -116,10 +139,13 @@ public class TCPSock {
         this.type = Type.RECEIVER;
     }
 
-    public void sendSynAck() //sends acknowledge of syn, establishing connection
+    public void sendSynAck(int seq) //sends acknowledge of syn, establishing connection
     {
-        Transport tcpPacket = new Transport(this.localPort, this.remPort, Transport.ACK, recWindow(), ++this.seq, new byte[0]);
+        // Transport tcpPacket = new Transport(this.localPort, this.remPort, Transport.ACK, recWindow(), ++this.seq, new byte[0]);
+        Transport tcpPacket = new Transport(this.localPort, this.remPort, Transport.ACK, recWindow(), seq + 1, new byte[0]);
         this.node.sendSegment(this.localAddr, this.remAddr, Protocol.TRANSPORT_PKT, tcpPacket.pack());
+
+        this.expSeq = seq + 1;
     }
 
     public void setLocalAddr(int addr)
@@ -230,9 +256,15 @@ public class TCPSock {
 
         this.tcpMan.addConnSocket(this, this.localPort, destAddr, destPort);
 
+        //create SYN packet
+
         //send SYN packet
-        Transport tcpPacket = new Transport(this.localPort, this.remPort, Transport.SYN, 0, 0, new byte[0]);
-        this.seq = 0;
+        this.seq = ThreadLocalRandom.current().nextInt(0, 2147483647);
+        this.base = this.seq + 1;
+        this.baseOrig = this.base;
+        this.nextSeq = this.seq + 1;
+        Transport tcpPacket = new Transport(this.localPort, this.remPort, Transport.SYN, 0, this.seq, new byte[0]);
+        
         debug("sending SYN...");
         this.node.sendSegment(this.localAddr, this.remAddr, Protocol.TRANSPORT_PKT, tcpPacket.pack());
         this.synTime = tcpTimestamp();
@@ -337,7 +369,7 @@ public class TCPSock {
             byte[] tcpPayload = this.sendQueue.get(this.nextSeq - this.base);
             sendDataPacket(tcpPayload, this.nextSeq);
             this.node.logPacket(".");
-            if (this.base == this.nextSeq && this.base == 1)
+            if (this.base == this.nextSeq && this.base == this.baseOrig)
             {
                 debug("sw start timer");
                 this.node.addTCPTimer(this.timerMs, this, new TCPSockTask(this.state, this.type, this.base)); //seqn irrelevant
@@ -584,7 +616,7 @@ public class TCPSock {
             int port = packetPayload.getSrcPort();
             int seq = packetPayload.getSeqNum();
             TCPSock connSock = this.tcpMan.connSock(this.localPort, addr, port, seq);
-            connSock.sendSynAck();
+            connSock.sendSynAck(seq);
             debug("setup connSock and sent ACK");
 
             String addrPort = String.valueOf(addr) + ":" + String.valueOf(port);
@@ -793,6 +825,57 @@ public class TCPSock {
             }
         }
         return count;
+    }
+
+    private byte[] encrypt(byte[] plaintext, byte[] key, byte[] IV) throws Exception
+    {
+        // Get Cipher Instance
+        Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+        
+        // Create SecretKeySpec
+        SecretKeySpec keySpec = new SecretKeySpec(key, "AES");
+        
+        // Create GCMParameterSpec
+        GCMParameterSpec gcmParameterSpec = new GCMParameterSpec(16 * 8, IV);
+        
+        // Initialize Cipher for ENCRYPT_MODE
+        cipher.init(Cipher.ENCRYPT_MODE, keySpec, gcmParameterSpec);
+        
+        // Perform Encryption
+        byte[] cipherText = cipher.doFinal(plaintext);
+        
+        return cipherText;
+    }
+
+    private byte[] decrypt(byte[] cipherText, byte[] key, byte[] IV) throws Exception
+    {
+        // Get Cipher Instance
+        Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+        
+        // Create SecretKeySpec
+        SecretKeySpec keySpec = new SecretKeySpec(key, "AES");
+        
+        // Create GCMParameterSpec
+        GCMParameterSpec gcmParameterSpec = new GCMParameterSpec(16 * 8, IV);
+        
+        // Initialize Cipher for DECRYPT_MODE
+        cipher.init(Cipher.DECRYPT_MODE, keySpec, gcmParameterSpec);
+        
+        // Perform Decryption
+        byte[] decryptedText = cipher.doFinal(cipherText);
+        
+        return decryptedText;
+    }
+
+    private byte[] toSHA(byte[] dhSecret) throws NoSuchAlgorithmException
+    {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        return digest.digest(dhSecret);
+    }
+
+    private byte[] senderPublicKeyCreate()
+    {
+        return null;
     }
 
     /*
