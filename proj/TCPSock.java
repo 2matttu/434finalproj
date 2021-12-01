@@ -118,6 +118,7 @@ public class TCPSock {
     private byte[] dhSecret256;
     private static int dhPublicKeySize;
     private KeyAgreement senderKeyAgree;
+    private int cert;
     
     public TCPSock() {
         this.state = State.INIT;
@@ -506,6 +507,17 @@ public class TCPSock {
             {
                 byte[] payload = packetPayload.getPayload();
                 unpackReceiverPacket(payload);
+                if (!node.validCertificate(this.cert)) {
+                    System.out.println("Cert from server invalid!");
+                    Transport tcpPacket = new Transport(this.localPort, packetPayload.getSrcPort(), Transport.FIN, 0, 0, new byte[0]);
+                    this.node.sendSegment(this.localAddr, packet.getSrc(), Protocol.TRANSPORT_PKT, tcpPacket.pack());
+                    this.node.logPacket("F");
+                    return;
+                }
+                else
+                {
+                    System.out.println("Cert from server valid.");
+                }
                 try
                 {
                     senderDHSecretCreate();
@@ -641,7 +653,7 @@ public class TCPSock {
                     }
                 }
             }
-            else if (this.state == State.SHUTDOWN && packetType == Transport.FIN)
+            else if ((this.state == State.SHUTDOWN || this.state == State.SYN_SENT || this.state == State.SYN_ACK_SENT) && packetType == Transport.FIN)
             {
                 this.node.logPacket("F");
                 this.state = State.CLOSED;
@@ -667,6 +679,19 @@ public class TCPSock {
             // System.out.println("size of Alice's public key:" + senderDHKey.length);
             // System.out.println("Alice's public key: " + toHexString(senderDHKey));
             connSock.unpackSenderPacket(payload);
+
+            if (!node.validCertificate(this.cert)) {
+                System.out.println("Cert from client invalid!");
+                Transport tcpPacket = new Transport(this.localPort, packetPayload.getSrcPort(), Transport.FIN, 0, 0, new byte[0]);
+                this.node.sendSegment(this.localAddr, from, Protocol.TRANSPORT_PKT, tcpPacket.pack());
+                this.node.logPacket("F");
+                return;
+            }
+            else
+            {
+                System.out.println("Cert from client valid.");
+            }
+
             try
             {
                 connSock.receiverDHKeyCreate();
@@ -1089,6 +1114,7 @@ public class TCPSock {
     private byte[] packSenderPacket()
     {
         ByteArrayOutputStream byteStream = new ByteArrayOutputStream();
+        byteStream.write((byte) this.node.getAddr());
         // byteStream.write(HEADER_SIZE + this.payload.length);	
         byte[] dhKeySizeByteArray = (BigInteger.valueOf(this.senderDHKey.length)).toByteArray();
         int paddingLength = 4 - dhKeySizeByteArray.length;
@@ -1104,6 +1130,7 @@ public class TCPSock {
     private byte[] packReceiverPacket()
     {
         ByteArrayOutputStream byteStream = new ByteArrayOutputStream();
+        byteStream.write((byte) this.node.getAddr());
         // byteStream.write(HEADER_SIZE + this.payload.length);	
         byte[] dhKeySizeByteArray = (BigInteger.valueOf(this.receiverDHKey.length)).toByteArray();
         int paddingLength = 4 - dhKeySizeByteArray.length;
@@ -1120,6 +1147,7 @@ public class TCPSock {
     {
         System.out.println("packet size: " + packet.length);
         ByteArrayInputStream byteStream = new ByteArrayInputStream(packet);
+        this.cert = (int) byteStream.read();
         byte[] sizeByteArray = new byte[4];
 	    byteStream.read(sizeByteArray, 0, 4);
         int senderDHKeySize = (new BigInteger(sizeByteArray)).intValue();
@@ -1132,6 +1160,7 @@ public class TCPSock {
     private void unpackReceiverPacket(byte[] packet)
     {
         ByteArrayInputStream byteStream = new ByteArrayInputStream(packet);
+        this.cert = (int) byteStream.read();
         byte[] sizeByteArray = new byte[4];
 	    byteStream.read(sizeByteArray, 0, 4);
         int receiverDHKeySize = (new BigInteger(sizeByteArray)).intValue();
