@@ -118,7 +118,7 @@ public class TCPSock {
     private byte[] dhSecret256;
     private static int dhPublicKeySize;
     private KeyAgreement senderKeyAgree;
-    private int cert;
+    private int receivedCert;
     
     public TCPSock() {
         this.state = State.INIT;
@@ -506,8 +506,9 @@ public class TCPSock {
             if (this.state == State.SYN_SENT && packetType == Transport.ACK && packetSeq == this.seq + 1) //first ack
             {
                 byte[] payload = packetPayload.getPayload();
-                unpackReceiverPacket(payload);
-                if (!node.validCertificate(this.cert)) {
+                int receivedCert = unpackReceiverPacket(payload);
+                if (!node.validCertificate(receivedCert)) {
+                    // System.out.println("CERTIFICATE: " + receivedCert);
                     System.out.println("Cert from server invalid!");
                     Transport tcpPacket = new Transport(this.localPort, packetPayload.getSrcPort(), Transport.FIN, 0, 0, new byte[0]);
                     this.node.sendSegment(this.localAddr, packet.getSrc(), Protocol.TRANSPORT_PKT, tcpPacket.pack());
@@ -678,9 +679,8 @@ public class TCPSock {
             byte[] payload = packetPayload.getPayload();
             // System.out.println("size of Alice's public key:" + senderDHKey.length);
             // System.out.println("Alice's public key: " + toHexString(senderDHKey));
-            connSock.unpackSenderPacket(payload);
-
-            if (!node.validCertificate(this.cert)) {
+            int receivedCert = connSock.unpackSenderPacket(payload);
+            if (!node.validCertificate(receivedCert)) {
                 System.out.println("Cert from client invalid!");
                 Transport tcpPacket = new Transport(this.localPort, packetPayload.getSrcPort(), Transport.FIN, 0, 0, new byte[0]);
                 this.node.sendSegment(this.localAddr, from, Protocol.TRANSPORT_PKT, tcpPacket.pack());
@@ -1143,24 +1143,29 @@ public class TCPSock {
         return byteStream.toByteArray();
     }
 
-    private void unpackSenderPacket(byte[] packet)
+    private int unpackSenderPacket(byte[] packet)
     {
         System.out.println("packet size: " + packet.length);
         ByteArrayInputStream byteStream = new ByteArrayInputStream(packet);
-        this.cert = (int) byteStream.read();
+        int cert = byteStream.read();
+        System.out.println("CERT UNPACK SENDER PACKET: " + cert);
+        receivedCert = cert;
         byte[] sizeByteArray = new byte[4];
 	    byteStream.read(sizeByteArray, 0, 4);
         int senderDHKeySize = (new BigInteger(sizeByteArray)).intValue();
         System.out.println("Alice Key Size: " + senderDHKeySize);
         this.senderDHKey = new byte[senderDHKeySize];
         byteStream.read(this.senderDHKey, 0, senderDHKeySize);
+        return cert;
         // TODO: read byte for certificate
     }
 
-    private void unpackReceiverPacket(byte[] packet)
+    private int unpackReceiverPacket(byte[] packet)
     {
         ByteArrayInputStream byteStream = new ByteArrayInputStream(packet);
-        this.cert = (int) byteStream.read();
+        int cert = byteStream.read();
+        System.out.println("CERT UNPACK RECEIVER PACKET: " + cert);
+        receivedCert = cert;
         byte[] sizeByteArray = new byte[4];
 	    byteStream.read(sizeByteArray, 0, 4);
         int receiverDHKeySize = (new BigInteger(sizeByteArray)).intValue();
@@ -1169,6 +1174,7 @@ public class TCPSock {
         byteStream.read(this.receiverDHKey, 0, receiverDHKeySize);
         System.out.println("Bob key: " + toHexString(this.receiverDHKey));
         // TODO: read certificate stuff
+        return cert;
     }
 
     /*
