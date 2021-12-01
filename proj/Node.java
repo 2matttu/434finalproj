@@ -2,6 +2,7 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.io.PrintStream;
 import java.lang.reflect.Method;
+import java.util.List;
 
 /**
  * <pre>
@@ -34,6 +35,11 @@ public class Node {
     // TCP manager
     private TCPManager tcpMan;
 
+    // certificate verification
+    static List<Integer> acceptedCertificates = List.of(0, 1);
+    static int nextCertificate = 1; 
+    private int certificate; 
+
     /**
      * Create a new node
      * @param manager The manager that is managing Fishnet
@@ -46,6 +52,8 @@ public class Node {
 
         // Fishnet reliable data transfer
         this.tcpMan = new TCPManager(this, addr, manager);
+        this.certificate = nextCertificate;
+        Node.nextCertificate++;
     }
 
     /**
@@ -377,5 +385,13 @@ public class Node {
         }
 
         return false;
+    }
+
+    public boolean validCertificate(int cert) {
+        return acceptedCertificates.contains(cert);
+    }
+
+    public int getCertificate() {
+        return this.certificate;
     }
 }

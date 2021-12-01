@@ -142,7 +142,8 @@ public class TCPSock {
     public void sendSynAck(int seq) //sends acknowledge of syn, establishing connection
     {
         // Transport tcpPacket = new Transport(this.localPort, this.remPort, Transport.ACK, recWindow(), ++this.seq, new byte[0]);
-        Transport tcpPacket = new Transport(this.localPort, this.remPort, Transport.ACK, recWindow(), seq + 1, new byte[0]);
+        byte[] payload = new byte[]{(byte) this.node.getAddr()};
+        Transport tcpPacket = new Transport(this.localPort, this.remPort, Transport.ACK, recWindow(), seq + 1, payload);
         this.node.sendSegment(this.localAddr, this.remAddr, Protocol.TRANSPORT_PKT, tcpPacket.pack());
 
         this.expSeq = seq + 1;
@@ -263,7 +264,8 @@ public class TCPSock {
         this.base = this.seq + 1;
         this.baseOrig = this.base;
         this.nextSeq = this.seq + 1;
-        Transport tcpPacket = new Transport(this.localPort, this.remPort, Transport.SYN, 0, this.seq, new byte[0]);
+        byte[] payload = new byte[]{(byte) this.node.getAddr()};
+        Transport tcpPacket = new Transport(this.localPort, this.remPort, Transport.SYN, 0, this.seq, payload);
         
         debug("sending SYN...");
         this.node.sendSegment(this.localAddr, this.remAddr, Protocol.TRANSPORT_PKT, tcpPacket.pack());
@@ -473,6 +475,15 @@ public class TCPSock {
             //if ack# == seq
             if (this.state == State.SYN_SENT && packetType == Transport.ACK && packetSeq == this.seq + 1) //first ack
             {
+                int cert = (int) packetPayload.getPayload()[0];
+                if (!node.validCertificate(cert)) {
+                    System.out.println("Received invalid certificate from server!");
+                    Transport tcpPacket = new Transport(this.localPort, packetPayload.getSrcPort(), Transport.FIN, 0, 0, new byte[0]);
+                    this.node.sendSegment(this.localAddr, packet.getSrc(), Protocol.TRANSPORT_PKT, tcpPacket.pack());
+                    this.node.logPacket("F");
+                    return;
+                }
+                
                 this.node.logPacket(":");
                 debug("syn ack received!"); 
                 this.rtt = tcpTimestamp() - this.synTime;
@@ -595,7 +606,7 @@ public class TCPSock {
                     }
                 }
             }
-            else if (this.state == State.SHUTDOWN && packetType == Transport.FIN)
+            else if ((this.state == State.SHUTDOWN || this.state == State.SYN_SENT || this.state == State.SYN_ACK_SENT) && packetType == Transport.FIN)
             {
                 this.node.logPacket("F");
                 this.state = State.CLOSED;
@@ -610,9 +621,19 @@ public class TCPSock {
         this.node.logPacket("S");
         if (this.type == Type.LISTEN && this.state == State.LISTEN && this.backlog.size() < this.backlogSize)
         {
+
+            Transport packetPayload = Transport.unpack(packet.getPayload());
+            int cert = (int) packetPayload.getPayload()[0];
+            if (!node.validCertificate(cert)) {
+                System.out.println("Received invalid certificate!");
+                Transport tcpPacket = new Transport(this.localPort, packetPayload.getSrcPort(), Transport.FIN, 0, 0, new byte[0]);
+                this.node.sendSegment(this.localAddr, from, Protocol.TRANSPORT_PKT, tcpPacket.pack());
+                this.node.logPacket("F");
+                return;
+            }
             //setup new connection socket
             int addr = from;
-            Transport packetPayload = Transport.unpack(packet.getPayload());
+            
             int port = packetPayload.getSrcPort();
             int seq = packetPayload.getSeqNum();
             TCPSock connSock = this.tcpMan.connSock(this.localPort, addr, port, seq);
@@ -635,7 +656,8 @@ public class TCPSock {
         {
             //resend SYN packet
             debug("resending SYN...");
-            Transport tcpPacket = new Transport(this.localPort, this.remPort, Transport.SYN, 0, 0, new byte[0]);
+            byte[] payload = new byte[]{(byte) this.node.getAddr()};
+            Transport tcpPacket = new Transport(this.localPort, this.remPort, Transport.SYN, 0, 0, payload);
             this.synTime = tcpTimestamp();
             this.node.sendSegment(this.localAddr, this.remAddr, Protocol.TRANSPORT_PKT, tcpPacket.pack());
             this.node.logPacket("!");
