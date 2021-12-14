@@ -48,6 +48,7 @@ public class TransferClient extends FishThread {
     }
 
     public void execute() {
+
         if (sock.isConnectionPending()) {
             //node.logOutput("connecting...");
             return;

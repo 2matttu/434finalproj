@@ -4,6 +4,25 @@ import java.io.PrintStream;
 import java.lang.reflect.Method;
 import java.util.List;
 
+import java.nio.ByteBuffer;
+import java.util.*;
+
+import java.io.*;
+import java.math.BigInteger;
+import java.security.*;
+import java.security.spec.*;
+import java.security.interfaces.*;
+import javax.crypto.*;
+import javax.crypto.spec.*;
+import javax.crypto.interfaces.*;
+
+import java.security.SecureRandom;
+import java.util.Base64;
+import javax.crypto.Cipher;
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.GCMParameterSpec;
+import javax.crypto.spec.SecretKeySpec;
 /**
  * <pre>
  * Node -- Class defining the data structures and code for the
@@ -38,7 +57,10 @@ public class Node {
     // certificate verification
     static List<Integer> acceptedCertificates = List.of(0, 1);
     static int nextCertificate = 1; 
-    private int certificate; 
+    private int certificate;  
+
+    private byte[] senderDHKey;
+    private KeyAgreement senderKeyAgree;
 
     /**
      * Create a new node
@@ -54,6 +76,37 @@ public class Node {
         this.tcpMan = new TCPManager(this, addr, manager);
         this.certificate = nextCertificate;
         Node.nextCertificate++;
+        try
+        {
+            senderDHKeyCreate();
+        }
+        catch (Exception e)
+        {
+            System.out.println("connect: failed to create key");
+        }
+
+    }
+
+    private void senderDHKeyCreate() throws Exception
+    {
+        /*
+         * Alice creates her own DH key pair with 2048-bit key size
+         */
+        System.out.println("Node: Generate DH keypair ...");
+        KeyPairGenerator aliceKpairGen = KeyPairGenerator.getInstance("DH");
+        aliceKpairGen.initialize(2048);
+        KeyPair aliceKpair = aliceKpairGen.generateKeyPair();
+        
+        // Alice creates and initializes her DH KeyAgreement object
+        System.out.println("Node: Initialization ...");
+        this.senderKeyAgree = KeyAgreement.getInstance("DH");
+        this.senderKeyAgree.init(aliceKpair.getPrivate());
+        
+        // Alice encodes her public key, and sends it over to Bob.
+        byte[] alicePubKeyEnc = aliceKpair.getPublic().getEncoded();
+        // System.out.println("size of Node's public key:" + alicePubKeyEnc.length);
+        // System.out.println("Node's public key: " + toHexString(alicePubKeyEnc));
+        this.senderDHKey = alicePubKeyEnc;
     }
 
     /**
@@ -300,7 +353,7 @@ public class Node {
         //     interval: execution interval of the transfer client, default 1 second
         //     sz: buffer size of the transfer client, default 65536
         String[] args = command.split(" ");
-        if (args.length < 5 || args.length > 8 || !args[0].equals("transfer")) {
+        if (args.length < 5 || args.length > 9 || !args[0].equals("transfer")) {
             return false;
         }
 
@@ -309,22 +362,29 @@ public class Node {
             int port = Integer.parseInt(args[2]);
             int localPort = Integer.parseInt(args[3]);
             int amount = Integer.parseInt(args[4]);
+            int isSecure =
+               args.length == 6 ?
+               Integer.parseInt(args[5]) :
+               1; //default secure
             long interval =
-                args.length >= 6 ?
-                Integer.parseInt(args[5]) :
+                args.length >= 7 ?
+                Integer.parseInt(args[6]) :
                 TransferClient.DEFAULT_CLIENT_INTERVAL;
             int sz =
-               args.length == 7 ?
-               Integer.parseInt(args[6]) :
-               TransferClient.DEFAULT_BUFFER_SZ;
-            int ccType =
                args.length == 8 ?
                Integer.parseInt(args[7]) :
+               TransferClient.DEFAULT_BUFFER_SZ;
+            int ccType =
+               args.length == 9 ?
+               Integer.parseInt(args[8]) :
                0; //RENO
             TCPSock sock = this.tcpMan.socket();
+
+            sock.setup((isSecure == 1) ? true : false, this.senderDHKey, this.senderKeyAgree); 
             sock.bind(localPort);
             sock.setCCAlgorithm(ccType); //RENO
             sock.connect(destAddr, port);
+            logOutput(((isSecure == 1) ? "Secure" : "Unsecure") + " client started");
             TransferClient client = new
                 TransferClient(manager, this, sock, amount, interval, sz);
             client.start();
@@ -352,33 +412,39 @@ public class Node {
         //     workint: execution interval of the transfer worker, default 1 second
         //     sz: buffer size of the transfer worker, default 65536
         String[] args = command.split(" ");
-        if (args.length < 3 || args.length > 6 || !args[0].equals("server")) {
+        if (args.length < 3 || args.length > 7 || !args[0].equals("server")) {
             return false;
         }
 
         try {
             int port = Integer.parseInt(args[1]);
             int backlog = Integer.parseInt(args[2]);
+            int isSecure =
+               args.length == 4 ?
+               Integer.parseInt(args[3]) :
+               1; //default secure
             long servint =
-                args.length >= 4 ?
-                Integer.parseInt(args[3]) :
-                TransferServer.DEFAULT_SERVER_INTERVAL;
-            long workint =
                 args.length >= 5 ?
                 Integer.parseInt(args[4]) :
+                TransferServer.DEFAULT_SERVER_INTERVAL;
+            long workint =
+                args.length >= 6 ?
+                Integer.parseInt(args[5]) :
                 TransferServer.DEFAULT_WORKER_INTERVAL;
             int sz =
-                args.length == 6 ?
-                Integer.parseInt(args[5]) :
+                args.length == 7 ?
+                Integer.parseInt(args[6]) :
                 TransferServer.DEFAULT_BUFFER_SZ;
             TCPSock sock = this.tcpMan.socket();
+        
+            sock.setup((isSecure == 1) ? true : false);
             sock.bind(port);
             sock.listen(backlog);
 
             TransferServer server = new
                TransferServer(manager, this, sock, servint, workint, sz);
             server.start();
-            logOutput("server started, port = " + port);
+            logOutput(((isSecure == 1) ? "Secure" : "Unsecure") + " server started, port = " + port);
             return true;
         } catch (Exception e) {
             logError("Exception: " + e);
@@ -393,5 +459,32 @@ public class Node {
 
     public int getCertificate() {
         return this.certificate;
+    }
+
+    /*
+     * Converts a byte to hex digit and writes to the supplied buffer
+     */
+    private static void byte2hex(byte b, StringBuffer buf) {
+        char[] hexChars = { '0', '1', '2', '3', '4', '5', '6', '7', '8',
+                '9', 'A', 'B', 'C', 'D', 'E', 'F' };
+        int high = ((b & 0xf0) >> 4);
+        int low = (b & 0x0f);
+        buf.append(hexChars[high]);
+        buf.append(hexChars[low]);
+    }
+
+    /*
+     * Converts a byte array to hex string
+     */
+    private static String toHexString(byte[] block) {
+        StringBuffer buf = new StringBuffer();
+        int len = block.length;
+        for (int i = 0; i < len; i++) {
+            byte2hex(block[i], buf);
+            if (i < len-1) {
+                buf.append(":");
+            }
+        }
+        return buf.toString();
     }
 }

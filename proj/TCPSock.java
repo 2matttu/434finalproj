@@ -92,7 +92,7 @@ public class TCPSock {
     private long timerMs; //timeout time in ms
 
     //Congestion control variables
-    private static int mss = Transport.MAX_PAYLOAD_SIZE; //maximum segment size
+    private static int mss = Transport.MAX_PAYLOAD_SIZE - 16; //maximum segment size
     private long cwnd; //send window
     private long ssthresh = 64000; //ssthresh
     private int dupAcks = 0;
@@ -111,7 +111,17 @@ public class TCPSock {
     private int cwndCnt;
 
     //Secure Transport Stuff
-    private byte[] dhPublicKey;
+    private byte[] senderDHKey;
+    private byte[] receiverDHKey;
+    private byte[] dhSecret;
+    private byte[] dhSecret128;
+    private byte[] dhSecret256;
+    private static int dhPublicKeySize;
+    private KeyAgreement senderKeyAgree;
+    private int receivedCert;
+
+    private boolean isSetup = false;
+    private boolean isSecure = false;
     
     public TCPSock() {
         this.state = State.INIT;
@@ -129,7 +139,7 @@ public class TCPSock {
         this.tcpMan = tcpMan;
     }
 
-    public void configConnSock(int localPort, int remAddr, int remPort, int startSeq)
+    public void configConnSock(int localPort, int remAddr, int remPort, int startSeq, boolean isSecure)
     {
         this.localPort = localPort;
         this.remAddr = remAddr;
@@ -137,12 +147,13 @@ public class TCPSock {
         this.seq = startSeq;
         this.state = State.SYN_ACK_SENT;
         this.type = Type.RECEIVER;
+        this.isSecure = isSecure;
     }
 
     public void sendSynAck(int seq) //sends acknowledge of syn, establishing connection
     {
         // Transport tcpPacket = new Transport(this.localPort, this.remPort, Transport.ACK, recWindow(), ++this.seq, new byte[0]);
-        byte[] payload = new byte[]{(byte) this.node.getAddr()};
+        byte[] payload = packReceiverPacket();
         Transport tcpPacket = new Transport(this.localPort, this.remPort, Transport.ACK, recWindow(), seq + 1, payload);
         this.node.sendSegment(this.localAddr, this.remAddr, Protocol.TRANSPORT_PKT, tcpPacket.pack());
 
@@ -168,7 +179,7 @@ public class TCPSock {
 
     /*
      * The following are the socket APIs of TCP transport service.
-     * All APIs are NON-BLOCKING.
+     * All APIs are NON-BLOCKING.sock
      */
 
     /**
@@ -243,6 +254,22 @@ public class TCPSock {
         return (state == State.SHUTDOWN);
     }
 
+    public void setup(boolean secure, byte[] publicKey, KeyAgreement senderKeyAgree) {
+        this.senderDHKey = publicKey;
+        this.senderKeyAgree = senderKeyAgree;
+        this.isSecure = secure;
+        this.isSetup = true;
+    }
+
+    public void setup(boolean secure) {
+        this.isSecure = secure;
+        this.isSetup = true;
+    }
+
+    public boolean isSetup() {
+        return this.isSetup;
+    }
+
     /**
      * Initiate connection to a remote socket
      *
@@ -259,12 +286,13 @@ public class TCPSock {
 
         //create SYN packet
 
+        byte[] payload = packSenderPacket();
+        // System.out.println("packet size: " + payload.length);
         //send SYN packet
         this.seq = ThreadLocalRandom.current().nextInt(0, 2147483647);
         this.base = this.seq + 1;
         this.baseOrig = this.base;
         this.nextSeq = this.seq + 1;
-        byte[] payload = new byte[]{(byte) this.node.getAddr()};
         Transport tcpPacket = new Transport(this.localPort, this.remPort, Transport.SYN, 0, this.seq, payload);
         
         debug("sending SYN...");
@@ -284,7 +312,7 @@ public class TCPSock {
             this.cwndCnt = 0;
         }
         //timeout for sending SYN
-        this.node.addTCPTimer(600, this, new TCPSockTask(this.state, this.type, this.seq));
+        this.node.addTCPTimer(2000, this, new TCPSockTask(this.state, this.type, this.seq));
         return 0;
     }
 
@@ -352,7 +380,7 @@ public class TCPSock {
         int nLeft = len;
         while (nLeft > 0 && this.sendQueue.size() < this.windowSize)
         {
-            int stride = Math.min(nLeft, Transport.MAX_PAYLOAD_SIZE);
+            int stride = Math.min(nLeft, Transport.MAX_PAYLOAD_SIZE - 16);
             byte[] tmpArr = Arrays.copyOfRange(buf, pos, pos + stride);
             this.sendQueue.add(tmpArr);
             pos += stride;
@@ -438,7 +466,26 @@ public class TCPSock {
             if (packetType == Transport.DATA && this.state == State.ESTABLISHED && packetSeq == this.expSeq)
             {
                 byte[] tcpPayload = packetPayload.getPayload(); //extract
-                if (payloadToBuff(tcpPayload) == 0) //deliver data, if -1 receive buffer full
+                byte[] decPayload = (isSecure) ? new byte[0] : tcpPayload;
+                if (isSecure) {
+                    try
+                    {
+                        decPayload = decrypt(tcpPayload, this.dhSecret256, this.dhSecret128, packetSeq);
+                    }
+                    catch (Exception e)
+                    {
+                        // printStackTrace method
+                        // prints line numbers + call stack
+                        // e.printStackTrace();
+                    
+                        // Prints what exception has been thrown
+                        System.out.println(e);
+                        System.out.println("Message authentication failed! Not sending ACK...");
+                        return;
+                    }
+                }
+                
+                if (payloadToBuff(decPayload) == 0) //deliver data, if -1 receive buffer full
                 {
                     this.node.logPacket(".");
                     this.sendAckPacket(this.expSeq); //make and send packet
@@ -460,10 +507,11 @@ public class TCPSock {
                 this.sendAckPacket(this.expSeq - 1); //re-ACK pkt with highest in-order seq #
                 this.node.logPacket("?");
             }
-            else if (packetType == Transport.FIN && this.state == State.ESTABLISHED)
+            else if (packetType == Transport.FIN && this.state == State.ESTABLISHED || packetType == Transport.FIN && this.state == State.SYN_ACK_SENT)
             {
                 this.node.logPacket("F");
                 debug("FIN received. Shutting down!");
+                this.node.logOutput("FIN received. Shutting down!");
                 Transport tcpPack = new Transport(this.localPort, this.remPort, Transport.FIN, 0, this.seq, new byte[0]);
                 this.node.sendSegment(this.localAddr, this.remAddr, Protocol.TRANSPORT_PKT, tcpPack.pack());
                 this.node.logPacket("F");
@@ -473,17 +521,49 @@ public class TCPSock {
         else //SENDER
         {
             //if ack# == seq
+            // this.node.logOutput("payload length: " + packetPayload.getPayload().length);
             if (this.state == State.SYN_SENT && packetType == Transport.ACK && packetSeq == this.seq + 1) //first ack
             {
-                int cert = (int) packetPayload.getPayload()[0];
-                if (!node.validCertificate(cert)) {
-                    System.out.println("Received invalid certificate from server!");
-                    Transport tcpPacket = new Transport(this.localPort, packetPayload.getSrcPort(), Transport.FIN, 0, 0, new byte[0]);
-                    this.node.sendSegment(this.localAddr, packet.getSrc(), Protocol.TRANSPORT_PKT, tcpPacket.pack());
-                    this.node.logPacket("F");
-                    return;
+                this.node.logOutput("seq: " + this.seq);
+                byte[] payload = packetPayload.getPayload();
+                if (isSecure) {
+                    if (payload.length == 0) {
+                        System.out.println("Server does not support requested secured connection! Abort!");
+                        Transport tcpPacket = new Transport(this.localPort, packetPayload.getSrcPort(), Transport.FIN, 0, 0, new byte[0]);
+                        this.node.sendSegment(this.localAddr, packet.getSrc(), Protocol.TRANSPORT_PKT, tcpPacket.pack());
+                        this.node.logPacket("F");
+                        this.state = State.CLOSED;
+                        return;
+                    }
+                    int receivedCert = unpackReceiverPacket(payload);
+                    if (!node.validCertificate(receivedCert)) {
+                        // System.out.println("CERTIFICATE: " + receivedCert);
+                        System.out.println("Cert from server invalid!");
+                        Transport tcpPacket = new Transport(this.localPort, packetPayload.getSrcPort(), Transport.FIN, 0, 0, new byte[0]);
+                        this.node.sendSegment(this.localAddr, packet.getSrc(), Protocol.TRANSPORT_PKT, tcpPacket.pack());
+                        this.node.logPacket("F");
+                        this.state = State.CLOSED;
+                        return;
+                    }
+                    else
+                    {
+                        System.out.println("Cert from server valid.");
+                    }
+                    try
+                    {
+                        senderDHSecretCreate();
+                    }
+                    catch (Exception e)
+                    {
+                        // printStackTrace method
+                        // prints line numbers + call stack
+                        e.printStackTrace();
+                    
+                        // Prints what exception has been thrown
+                        System.out.println(e);
+                    }
                 }
-                
+               
                 this.node.logPacket(":");
                 debug("syn ack received!"); 
                 this.rtt = tcpTimestamp() - this.synTime;
@@ -621,24 +701,54 @@ public class TCPSock {
         this.node.logPacket("S");
         if (this.type == Type.LISTEN && this.state == State.LISTEN && this.backlog.size() < this.backlogSize)
         {
-
+            //setup new connection socket
+            int addr = from;
             Transport packetPayload = Transport.unpack(packet.getPayload());
-            int cert = (int) packetPayload.getPayload()[0];
-            if (!node.validCertificate(cert)) {
-                System.out.println("Received invalid certificate!");
+            int port = packetPayload.getSrcPort();
+            int seq = packetPayload.getSeqNum();
+            TCPSock connSock = this.tcpMan.connSock(this.localPort, addr, port, seq, this.isSecure);
+            // System.out.println("HHH");
+            byte[] payload = packetPayload.getPayload();
+            // System.out.println("size of Alice's public key:" + senderDHKey.length);
+            // System.out.println("Alice's public key: " + toHexString(senderDHKey));
+            if (payload.length == 0 && isSecure) {
+                System.out.println("Client attempting to initiate unsecure connection on a secured server!");
                 Transport tcpPacket = new Transport(this.localPort, packetPayload.getSrcPort(), Transport.FIN, 0, 0, new byte[0]);
                 this.node.sendSegment(this.localAddr, from, Protocol.TRANSPORT_PKT, tcpPacket.pack());
                 this.node.logPacket("F");
                 return;
             }
-            //setup new connection socket
-            int addr = from;
-            
-            int port = packetPayload.getSrcPort();
-            int seq = packetPayload.getSeqNum();
-            TCPSock connSock = this.tcpMan.connSock(this.localPort, addr, port, seq);
+            if (isSecure)
+            {
+                int receivedCert = connSock.unpackSenderPacket(payload);
+                if (!node.validCertificate(receivedCert)) {
+                    System.out.println("Cert from client invalid!");
+                    Transport tcpPacket = new Transport(this.localPort, packetPayload.getSrcPort(), Transport.FIN, 0, 0, new byte[0]);
+                    this.node.sendSegment(this.localAddr, from, Protocol.TRANSPORT_PKT, tcpPacket.pack());
+                    this.node.logPacket("F");
+                    return;
+                }
+                else
+                {
+                    System.out.println("Cert from client valid.");
+                }
+
+                try
+                {
+                    connSock.receiverDHKeyCreate();
+                }
+                catch (Exception e)
+                {
+                    // printStackTrace method
+                    // prints line numbers + call stack
+                    e.printStackTrace();
+                
+                    // Prints what exception has been thrown
+                    System.out.println(e);
+                }
+            }
             connSock.sendSynAck(seq);
-            debug("setup connSock and sent ACK");
+            this.node.logOutput("setup connSock and sent ACK");
 
             String addrPort = String.valueOf(addr) + ":" + String.valueOf(port);
             if (this.backlog.size() < this.backlogSize)
@@ -655,13 +765,22 @@ public class TCPSock {
         if (task.getState() == State.SYN_SENT && this.state == State.SYN_SENT)
         {
             //resend SYN packet
-            debug("resending SYN...");
-            byte[] payload = new byte[]{(byte) this.node.getAddr()};
+            this.node.logOutput("resending SYN...");
+            //create SYN packet
+
+            byte[] payload = packSenderPacket();
+            // System.out.println("packet size: " + payload.length);
+            //send SYN packet
+            this.seq = ThreadLocalRandom.current().nextInt(0, 2147483647);
+            // this.node.logOutput("timout seq: " + this.seq);
+            this.base = this.seq + 1; 
+            this.baseOrig = this.base;
+            this.nextSeq = this.seq + 1;
             Transport tcpPacket = new Transport(this.localPort, this.remPort, Transport.SYN, 0, 0, payload);
             this.synTime = tcpTimestamp();
             this.node.sendSegment(this.localAddr, this.remAddr, Protocol.TRANSPORT_PKT, tcpPacket.pack());
             this.node.logPacket("!");
-            this.node.addTCPTimer(600, this, new TCPSockTask(this.state, this.type, this.seq));
+            this.node.addTCPTimer(2000, this, new TCPSockTask(this.state, this.type, this.seq));
         }
         else if ((task.getState() == State.ESTABLISHED || task.getState() == State.SHUTDOWN) && (this.state == State.ESTABLISHED || this.state == State.SHUTDOWN) && task.getSeqN() == this.base)
         {
@@ -712,7 +831,27 @@ public class TCPSock {
 
     public void sendDataPacket(byte[] tcpPayload, int seqNum)
     {
-        Transport tcpPacket = new Transport(this.localPort, this.remPort, Transport.DATA, 0, seqNum, tcpPayload);
+        byte[] encPayload = (isSecure) ? new byte[0] : tcpPayload;
+        // byte[] decPayload = new byte[0];
+        if (isSecure)
+        {
+            try
+            {
+                encPayload = encrypt(tcpPayload, this.dhSecret256, this.dhSecret128, seqNum);
+                // decPayload = decrypt(encPayload, this.dhSecret256, this.dhSecret128, seqNum);
+            }
+            catch (Exception e)
+            {
+                    // printStackTrace method
+                    // prints line numbers + call stack
+                    e.printStackTrace();
+                
+                    // Prints what exception has been thrown
+                    System.out.println(e);
+            }
+        }
+        
+        Transport tcpPacket = new Transport(this.localPort, this.remPort, Transport.DATA, 0, seqNum, encPayload);
         this.node.sendSegment(this.localAddr, this.remAddr, Protocol.TRANSPORT_PKT, tcpPacket.pack());
     }
 
@@ -849,36 +988,41 @@ public class TCPSock {
         return count;
     }
 
-    private byte[] encrypt(byte[] plaintext, byte[] key, byte[] IV) throws Exception
+    private byte[] encrypt(byte[] plaintext, byte[] key, byte[] IV, int seqNum) throws Exception
     {
         // Get Cipher Instance
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
         
         // Create SecretKeySpec
         SecretKeySpec keySpec = new SecretKeySpec(key, "AES");
+
+        byte[] newIV = ivXOR(IV, seqNum);
         
         // Create GCMParameterSpec
-        GCMParameterSpec gcmParameterSpec = new GCMParameterSpec(16 * 8, IV);
+        GCMParameterSpec gcmParameterSpec = new GCMParameterSpec(128, newIV);
         
         // Initialize Cipher for ENCRYPT_MODE
         cipher.init(Cipher.ENCRYPT_MODE, keySpec, gcmParameterSpec);
         
         // Perform Encryption
         byte[] cipherText = cipher.doFinal(plaintext);
-        
+
+        // System.out.println("Inflation: " + (cipherText.length - plaintext.length));
         return cipherText;
     }
 
-    private byte[] decrypt(byte[] cipherText, byte[] key, byte[] IV) throws Exception
+    private byte[] decrypt(byte[] cipherText, byte[] key, byte[] IV, int seqNum) throws Exception
     {
         // Get Cipher Instance
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
         
         // Create SecretKeySpec
         SecretKeySpec keySpec = new SecretKeySpec(key, "AES");
+
+        byte[] newIV = ivXOR(IV, seqNum);
         
         // Create GCMParameterSpec
-        GCMParameterSpec gcmParameterSpec = new GCMParameterSpec(16 * 8, IV);
+        GCMParameterSpec gcmParameterSpec = new GCMParameterSpec(128, newIV);
         
         // Initialize Cipher for DECRYPT_MODE
         cipher.init(Cipher.DECRYPT_MODE, keySpec, gcmParameterSpec);
@@ -889,15 +1033,223 @@ public class TCPSock {
         return decryptedText;
     }
 
+    private byte[] ivXOR(byte[] IV, int seqNum)
+    {
+        BigInteger bigInt = BigInteger.valueOf(seqNum);      
+        byte[] intByteArray = bigInt.toByteArray();
+        byte[] newIV = new byte[16];
+        for (int i = 0; i < 16; i++)
+        {
+            newIV[i] = (byte) (IV[i] ^ intByteArray[i % 4]);
+        }
+        return newIV;
+    }
+
     private byte[] toSHA(byte[] dhSecret) throws NoSuchAlgorithmException
     {
         MessageDigest digest = MessageDigest.getInstance("SHA-256");
         return digest.digest(dhSecret);
     }
 
-    private byte[] senderPublicKeyCreate()
+    private void senderDHKeyCreate() throws Exception
     {
-        return null;
+        /*
+         * Alice creates her own DH key pair with 2048-bit key size
+         */
+        System.out.println("Sender: Generate DH keypair ...");
+        KeyPairGenerator aliceKpairGen = KeyPairGenerator.getInstance("DH");
+        aliceKpairGen.initialize(2048);
+        KeyPair aliceKpair = aliceKpairGen.generateKeyPair();
+        
+        // Alice creates and initializes her DH KeyAgreement object
+        System.out.println("Sender: Initialization ...");
+        this.senderKeyAgree = KeyAgreement.getInstance("DH");
+        this.senderKeyAgree.init(aliceKpair.getPrivate());
+        
+        // Alice encodes her public key, and sends it over to Bob.
+        byte[] alicePubKeyEnc = aliceKpair.getPublic().getEncoded();
+        // System.out.println("size of Sender's public key:" + alicePubKeyEnc.length);
+        // System.out.println("Sender's public key: " + toHexString(alicePubKeyEnc));
+        this.senderDHKey = alicePubKeyEnc;
+    }
+
+    private void senderDHSecretCreate() throws Exception
+    {
+        /*
+         * Alice uses Bob's public key for the first (and only) phase
+         * of her version of the DH
+         * protocol.
+         * Before she can do so, she has to instantiate a DH public key
+         * from Bob's encoded key material.
+         */
+        KeyFactory aliceKeyFac = KeyFactory.getInstance("DH");
+        X509EncodedKeySpec x509KeySpec = new X509EncodedKeySpec(this.receiverDHKey);
+        PublicKey bobPubKey = aliceKeyFac.generatePublic(x509KeySpec);
+        // System.out.println("ALICE: Execute PHASE1 ...");
+        this.senderKeyAgree.doPhase(bobPubKey, true);
+        this.dhSecret = this.senderKeyAgree.generateSecret();
+        // System.out.println("Alice secret: " + toHexString(this.dhSecret));
+        MessageDigest md = MessageDigest.getInstance("MD5");
+        this.dhSecret128 = md.digest(this.dhSecret);
+        // System.out.println("Alice secret128: " + toHexString(this.dhSecret128));
+        md = MessageDigest.getInstance("SHA-256");
+        this.dhSecret256 = md.digest(this.dhSecret);
+        // System.out.println("Alice secret256: " + toHexString(this.dhSecret256));
+
+    }
+
+    private void receiverDHKeyCreate() throws Exception
+    {
+        /*
+         * Let's turn over to Bob. Bob has received Alice's public key
+         * in encoded format.
+         * He instantiates a DH public key from the encoded key material.
+         */
+        KeyFactory bobKeyFac = KeyFactory.getInstance("DH");
+        X509EncodedKeySpec x509KeySpec = new X509EncodedKeySpec(this.senderDHKey);
+
+        PublicKey alicePubKey = bobKeyFac.generatePublic(x509KeySpec);
+
+        /*
+         * Bob gets the DH parameters associated with Alice's public key.
+         * He must use the same parameters when he generates his own key
+         * pair.
+         */
+        DHParameterSpec dhParamFromAlicePubKey = ((DHPublicKey)alicePubKey).getParams();
+
+        // Bob creates his own DH key pair
+        // System.out.println("BOB: Generate DH keypair ...");
+        KeyPairGenerator bobKpairGen = KeyPairGenerator.getInstance("DH");
+        bobKpairGen.initialize(dhParamFromAlicePubKey);
+        KeyPair bobKpair = bobKpairGen.generateKeyPair();
+
+        // Bob creates and initializes his DH KeyAgreement object
+        // System.out.println("BOB: Initialization ...");
+        KeyAgreement bobKeyAgree = KeyAgreement.getInstance("DH");
+        bobKeyAgree.init(bobKpair.getPrivate());
+
+        // Bob encodes his public key, and sends it over to Alice.
+        this.receiverDHKey = bobKpair.getPublic().getEncoded();
+        // System.out.println("size of Bob's public key:" + this.receiverDHKey.length);
+        // System.out.println("Bob's public key: " + toHexString(this.receiverDHKey));
+
+        /*
+         * Bob uses Alice's public key for the first (and only) phase
+         * of his version of the DH
+         * protocol.
+         */
+        // System.out.println("BOB: Execute PHASE1 ...");
+        bobKeyAgree.doPhase(alicePubKey, true);
+        this.dhSecret = bobKeyAgree.generateSecret();
+        // System.out.println("Bob secret: " + toHexString(this.dhSecret));
+        MessageDigest md = MessageDigest.getInstance("MD5");
+        this.dhSecret128 = md.digest(this.dhSecret);
+        // System.out.println("Bob secret128: " + toHexString(this.dhSecret128));
+        md = MessageDigest.getInstance("SHA-256");
+        this.dhSecret256 = md.digest(this.dhSecret);
+        // System.out.println("Bob secret256: " + toHexString(this.dhSecret256));
+    }
+
+    private byte[] packSenderPacket()
+    {
+        // this.node.logOutput("isSecure: " + this.isSecure);
+        if (!isSecure)
+        {
+            return new byte[0];
+        }
+        ByteArrayOutputStream byteStream = new ByteArrayOutputStream();
+        byteStream.write((byte) this.node.getAddr());
+        // byteStream.write(HEADER_SIZE + this.payload.length);	
+        byte[] dhKeySizeByteArray = (BigInteger.valueOf(this.senderDHKey.length)).toByteArray();
+        int paddingLength = 4 - dhKeySizeByteArray.length;
+        for(int i = 0; i < paddingLength; i++) {
+            byteStream.write(0);
+        }
+        byteStream.write(dhKeySizeByteArray, 0, Math.min(dhKeySizeByteArray.length, 4));
+        byteStream.write(this.senderDHKey, 0, this.senderDHKey.length);
+        return byteStream.toByteArray();
+        // TODO: write byte for certificate
+    }
+
+    private byte[] packReceiverPacket()
+    {
+        if (!isSecure)
+        {
+            return new byte[0];
+        }
+        ByteArrayOutputStream byteStream = new ByteArrayOutputStream();
+        byteStream.write((byte) this.node.getAddr());
+        // byteStream.write(HEADER_SIZE + this.payload.length);	
+        byte[] dhKeySizeByteArray = (BigInteger.valueOf(this.receiverDHKey.length)).toByteArray();
+        int paddingLength = 4 - dhKeySizeByteArray.length;
+        for(int i = 0; i < paddingLength; i++) {
+            byteStream.write(0);
+        }
+        byteStream.write(dhKeySizeByteArray, 0, Math.min(dhKeySizeByteArray.length, 4));
+        byteStream.write(this.receiverDHKey, 0, this.receiverDHKey.length);
+        // TODO: write certificate stuff
+        return byteStream.toByteArray();
+    }
+
+    private int unpackSenderPacket(byte[] packet)
+    {
+        // System.out.println("packet size: " + packet.length);
+        ByteArrayInputStream byteStream = new ByteArrayInputStream(packet);
+        int cert = byteStream.read();
+        // System.out.println("CERT UNPACK SENDER PACKET: " + cert);
+        receivedCert = cert;
+        byte[] sizeByteArray = new byte[4];
+	    byteStream.read(sizeByteArray, 0, 4);
+        int senderDHKeySize = (new BigInteger(sizeByteArray)).intValue();
+        // System.out.println("Alice Key Size: " + senderDHKeySize);
+        this.senderDHKey = new byte[senderDHKeySize];
+        byteStream.read(this.senderDHKey, 0, senderDHKeySize);
+        return cert;
+        // TODO: read byte for certificate
+    }
+
+    private int unpackReceiverPacket(byte[] packet)
+    {
+        ByteArrayInputStream byteStream = new ByteArrayInputStream(packet);
+        int cert = byteStream.read();
+        // System.out.println("CERT UNPACK RECEIVER PACKET: " + cert);
+        receivedCert = cert;
+        byte[] sizeByteArray = new byte[4];
+	    byteStream.read(sizeByteArray, 0, 4);
+        int receiverDHKeySize = (new BigInteger(sizeByteArray)).intValue();
+        // System.out.println("Bob Key Size: " + receiverDHKeySize);
+        this.receiverDHKey = new byte[receiverDHKeySize];
+        byteStream.read(this.receiverDHKey, 0, receiverDHKeySize);
+        // System.out.println("Bob key: " + toHexString(this.receiverDHKey));
+        // TODO: read certificate stuff
+        return cert;
+    }
+
+    /*
+     * Converts a byte to hex digit and writes to the supplied buffer
+     */
+    private static void byte2hex(byte b, StringBuffer buf) {
+        char[] hexChars = { '0', '1', '2', '3', '4', '5', '6', '7', '8',
+                '9', 'A', 'B', 'C', 'D', 'E', 'F' };
+        int high = ((b & 0xf0) >> 4);
+        int low = (b & 0x0f);
+        buf.append(hexChars[high]);
+        buf.append(hexChars[low]);
+    }
+
+    /*
+     * Converts a byte array to hex string
+     */
+    private static String toHexString(byte[] block) {
+        StringBuffer buf = new StringBuffer();
+        int len = block.length;
+        for (int i = 0; i < len; i++) {
+            byte2hex(block[i], buf);
+            if (i < len-1) {
+                buf.append(":");
+            }
+        }
+        return buf.toString();
     }
 
     /*

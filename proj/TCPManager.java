@@ -53,11 +53,11 @@ public class TCPManager {
         return newSock;
     }
 
-    public TCPSock connSock(int localPort, int remAddr, int remPort, int seqNum)
+    public TCPSock connSock(int localPort, int remAddr, int remPort, int seqNum, boolean isSecure)
     {
         TCPSock newSock = new TCPSock();
         newSock.config(this.addr, this.node, this);
-        newSock.configConnSock(localPort, remAddr, remPort, seqNum);
+        newSock.configConnSock(localPort, remAddr, remPort, seqNum, isSecure);
         addConnSocket(newSock, localPort, remAddr, remPort);
         return newSock;
     }
