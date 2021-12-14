@@ -476,10 +476,12 @@ public class TCPSock {
                     {
                         // printStackTrace method
                         // prints line numbers + call stack
-                        e.printStackTrace();
+                        // e.printStackTrace();
                     
                         // Prints what exception has been thrown
                         System.out.println(e);
+                        System.out.println("Message authentication failed! Not sending ACK...");
+                        return;
                     }
                 }
                 
